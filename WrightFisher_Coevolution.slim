@@ -1,0 +1,75 @@
+//Implement a simple model of coevolution in slim
+//Slim isn't billed as a framework for studying evolutionary
+//interactions between multiple species. But we can do it with a 
+//couple of hacks.
+//First we need to split population into reproductively isolated slices
+//Then we need to have the fitness of each slice depend on density and
+//genotypes of individuals in the other slice
+
+initialize() {
+    defineConstant("hN", 500); //host pop size
+    defineConstant("pN", 500); //parasite pop size
+    initializeMutationType("m1", 0.5, "f", 0.0); // neutral
+    initializeMutationType("m2", 0.5, "f", 0.1); // virulence alleles
+    initializeMutationType("m3", 0.5, "f", 0.1); // resistance alleles
+    m2.convertToSubstitution = F; //need to keep all alleles around
+    m3.convertToSubstitution = F; //same
+    initializeGenomicElementType("g1", c(m1,m2,m3), c(1,0.1,0.1));
+    initializeGenomicElement(g1, 0, 99999);
+    initializeMutationRate(1e-7);
+    initializeRecombinationRate(1e-8);   
+}
+
+//fitness of resistance alleles depends on density of virulent pathogens
+fitness(m3,p1) {
+    pathogens = p2.individuals;
+    virPaths = pathogens[pathogens.sumOfMutationsOfType(m2) > 0];
+    virDens = size(virPaths) / size(pathogens);
+    return (relFitness * 1/(1+virDens))-0.06;  
+}
+
+//resistance alleles are neutral in pathogens
+fitness(m3,p2){
+    return 1.0;
+}
+
+//fitness of virulence alleles depends on density of resistant hosts
+fitness(m2,p2) {
+    hosts = p1.individuals;
+    resHosts = hosts[hosts.sumOfMutationsOfType(m3) > 0];
+    resDens = size(resHosts) / size(hosts);
+    return (relFitness * 1/(1+resDens))-0.06;  
+}
+
+//virulence alleles are neutral in hosts
+fitness(m2,p1){
+    return 1.0;
+}
+
+//The simplest way to have reproductive isolation is to just set up
+//two subpopulations, and have no migration
+
+//set up the population and tag about half of em with 1, 
+//and the others with zero
+1 {
+    sim.addSubpop("p1", 500); //initialize hosts
+    sim.addSubpop("p2", 500); //initialize parasites
+    p1.setMigrationRates(p2, 0.0);
+    p2.setMigrationRates(p1, 0.0);
+}
+
+
+1: {
+    pathogens = p2.individuals;
+    hosts = p1.individuals;
+    virPaths = pathogens[pathogens.sumOfMutationsOfType(m2) > 0];
+    virDens = size(virPaths) / size(pathogens);
+    resHosts = hosts[hosts.sumOfMutationsOfType(m3) > 0];
+    resDens = size(resHosts) / size(hosts);
+    if ((sim.generation -1) % 10 == 0){
+        catn(c((sim.generation -1), virDens, resDens));
+        writeFile("slimWFCoev.csv", paste(c((sim.generation-1),virDens,resDens),sep=','), append=T);
+	    }
+}
+
+1001 { sim.simulationFinished(); }

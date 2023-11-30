@@ -1,0 +1,47 @@
+//A SliM version of the Hoekstra 1975 model of cyclical selection
+
+initialize() {
+    initializeMutationRate(0); //turn off mutation
+    initializeMutationType("m1", 0.5, "f", 0.1); //non-neutral mutations
+    m1.convertToSubstitution = F;
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElement(g1, 0, 99999);
+    initializeRecombinationRate(1e-8);
+}
+
+//make fitness effects alternate in a two-generation cycle
+1: fitness(m1){
+    if ((sim.generation -1) % 2 == 0) {
+        return 1/relFitness; // in even generations fitness effects are inverted
+    } else {
+        return relFitness; // in odd they aren't
+    }
+}
+
+//initialize a subpopulation 
+1 { 
+    sim.addSubpop("p1", 5000); 
+}
+
+//give half of the genomes a m1 mutation
+1 late(){
+    g = sim.subpopulations.genomes;
+    GM = sample(g, asInteger(5000)); // individuals are diploid so there are a total of 1000 genomes
+    GM.addNewDrawnMutation(m1, 999);
+}
+
+/*1: {*/
+/*    newSize = cos((sim.generation - 1) / 100) * 500 + 1000;*/
+/*    p1.setSubpopulationSize(asInteger(newSize));*/
+/*}*/
+
+1:10000 {
+    if ((sim.generation -1) % 100 == 0){
+        muts = sim.mutationsOfType(m1);
+	    freqs = sim.mutationFrequencies(NULL, muts);
+	    freq = size(freqs) ? freqs[0] else 0;
+	    catn(freq);
+    }
+}
+
+//1000 late() { sim.outputFixedMutations(); }

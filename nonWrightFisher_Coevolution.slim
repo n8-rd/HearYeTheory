@@ -1,0 +1,128 @@
+//Implement a simple model of coevolution in slim
+//Slim isn't billed as a framework for studying evolutionary
+//interactions between multiple species. But we can do it with a 
+//couple of hacks.
+//First we need to split population into reproductively isolated slices
+//Then we need to have the fitness of each slice depend on density and
+//genotypes of individuals in the other slice
+
+initialize() {
+    initializeSLiMModelType("nonWF");
+    defineConstant("hK", 500); //nominal host carrying capacity
+    defineConstant("hR", 1.1); //host proliferation rate
+    defineConstant("hM", hK / (hR-1)); //a Beverton-Holt thing 
+    defineConstant("pK", 500); //nominal host carrying capacity
+    defineConstant("pR", 1.1); //host proliferation rate
+    defineConstant("pM", pK / (pR-1)); //a Beverton-Holt thing 
+    initializeMutationType("m1", 0.5, "f", 0.0); // neutral
+    initializeMutationType("m2", 0.5, "f", 0.1); // virulence alleles
+    initializeMutationType("m3", 0.5, "f", 0.1); // resistance alleles
+    m2.convertToSubstitution = F; //need to keep all alleles around
+    m3.convertToSubstitution = F; //same
+    initializeGenomicElementType("g1", c(m1,m2,m3), c(1,0.1,0.1));
+    initializeGenomicElement(g1, 0, 99999);
+    initializeMutationRate(1e-7);
+    initializeRecombinationRate(1e-8);   
+}
+
+//fitness of resistance alleles depends on density of virulent pathogens
+fitness(m3) {
+    pathogens = subpop.subsetIndividuals(tag=1);
+    virPaths = pathogens[pathogens.sumOfMutationsOfType(m2) > 0];
+    virDens = size(virPaths) / size(pathogens);
+    return (relFitness * 1/(1+virDens))-0.06;   
+}
+
+//fitness of virulence alleles depends on density of resistant hosts
+fitness(m2) {
+    hosts = subpop.subsetIndividuals(tag=0);
+    resHosts = hosts[hosts.sumOfMutationsOfType(m3) > 0];
+    resDens = size(resHosts) / size(hosts);
+    return (relFitness * 1/(1+resDens))-0.06; 
+}
+
+//There are a few hacks we can use to make multi-species models
+//Here's we are giving different species different values for the
+//tag property of individuals. Children inherit the tag of their parents. 
+//And adults only mate with individuals that have the same tag.
+
+//do assortative mating in a repoduction callback
+reproduction(){
+    pathogens = subpop.subsetIndividuals(tag=1);
+    hosts = subpop.subsetIndividuals(tag=0);
+    if (individual.tag == 1){ //it's a pathogen
+        if (individual.sumOfMutationsOfType(2) > 0){
+            //it's virulent
+            //reproduces up to the Beverton-Holt equation's target
+            n_t = size(pathogens);
+            n_t_plus_1 = (pR * n_t) / (1 + n_t / pM);
+            mean_litter_size = 0.97*n_t_plus_1 / n_t;
+            litterSize = rpois(1, mean_litter_size);
+            for (i in seqLen(litterSize))
+                subpop.addCrossed(individual, sample(pathogens,1));
+        } else {
+            //it's avirulent
+            n_t = size(pathogens);
+            n_t_plus_1 = (pR * n_t) / (1 + n_t / pM);
+            mean_litter_size = n_t_plus_1 / n_t;
+            litterSize = rpois(1, mean_litter_size);
+            for (i in seqLen(litterSize))
+                subpop.addCrossed(individual, sample(pathogens,1));
+        }
+    } else { //it's a host
+        if (individual.sumOfMutationsOfType(3) > 0){
+            //it's resistant
+            //reproduces up to the Beverton-Holt equation's target
+            n_t = size(hosts);
+            n_t_plus_1 = (hR * n_t) / (1 + n_t / hM);
+            mean_litter_size = 0.97*n_t_plus_1 / n_t;
+            litterSize = rpois(1, mean_litter_size);
+            for (i in seqLen(litterSize))
+                subpop.addCrossed(individual, sample(hosts,1));
+        } else {
+            //it's susceptible
+            //reproduces up to the Beverton-Holt equation's target
+            n_t = size(hosts);
+            n_t_plus_1 = (hR * n_t) / (1 + n_t / hM);
+            mean_litter_size = n_t_plus_1 / n_t;
+            litterSize = rpois(1, mean_litter_size);
+            for (i in seqLen(litterSize))
+                subpop.addCrossed(individual, sample(hosts,1));
+        }
+    }
+}
+
+//give kids their parents' tag
+modifyChild() {
+    parentTag = parent1.tag;
+    child.tag = parentTag;
+    return T;
+}
+
+//set up the population and tag about half of em with 1, 
+//and the others with zero
+1 {
+    sim.addSubpop("p1", 500);
+    p1.individuals.tag = rbinom(500, 1, 0.5);
+}
+
+//do non-overlapping generations
+1: early() {
+    inds = p1.individuals;
+    inds[inds.age > 0].fitnessScaling = 0.0;
+}
+
+1: {
+    pathogens = p1.subsetIndividuals(tag=1);
+    hosts = p1.subsetIndividuals(tag=0);
+    virPaths = pathogens[pathogens.sumOfMutationsOfType(m2) > 0];
+    virDens = size(virPaths) / size(pathogens);
+    resHosts = hosts[hosts.sumOfMutationsOfType(m3) > 0];
+    resDens = size(resHosts) / size(hosts);
+    if ((sim.generation -1) % 10 == 0){
+        catn(c((sim.generation -1), virDens, resDens));
+        writeFile("slimCoev.csv", paste(c((sim.generation-1),virDens,resDens),sep=','), append=T);
+	    }
+}
+
+1001 { sim.simulationFinished(); }

@@ -1,0 +1,67 @@
+//A SliM version model spatial heterogeneity in hard selection on a dialelic locus
+
+initialize() {
+    initializeSLiMModelType("nonWF");
+    defineConstant("N", 4); // number of subpopulations
+    defineConstant("K", 100); //carrying capacity for each habitat
+    defineConstant("m", 0.01); // migration rate
+    initializeMutationRate(0); //turn off mutation
+    initializeMutationType("m1", 0.5, "f", 0.2); //non-neutral mutations
+    m1.convertToSubstitution = F;
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElement(g1, 0, 99999);
+    initializeRecombinationRate(1e-8);
+}
+
+//Simple reproduction callback. nothing flash
+reproduction() {
+    subpop.addCrossed(individual, subpop.sampleIndividuals(1));
+}
+
+
+//set up N subpopulations
+1 early() {
+    for (i in 1:N){
+        sim.addSubpop(i, 100);
+    }
+}
+
+//make fitness effects vary between patches
+mutationEffect(m1, p1) { return effect; }
+mutationEffect(m1, p2) { return effect/3; }
+mutationEffect(m1, p3) { return 1/effect; }
+mutationEffect(m1, p4) { return 1.0; }
+
+//random migration and density-dependent regulation
+early() {
+    nIndividuals = sum(sim.subpopulations.individualCount);
+    nMigrants = rpois(1, nIndividuals * m);
+    migrants = sample(sim.subpopulations.individuals, nMigrants);
+    for (migrant in migrants){
+        do dest = sample(sim.subpopulations, 1);
+        while (dest == migrant.subpopulation);
+        dest.takeMigrants(migrant);
+    }
+    // density-dependence
+    for (subpop in sim.subpopulations){
+        subpop.fitnessScaling = K / subpop.individualCount;
+    }
+}
+
+
+//give half of the genomes a m1 mutation
+1 early(){
+    g = sim.subpopulations.genomes;
+    GM = sample(g, asInteger(400)); // individuals are diploid so there are a total of 1000 genomes
+    GM.addNewDrawnMutation(m1, 999);
+}
+
+1:2000 early() {
+    if ((sim.cycle -1) % 10 == 0){
+        muts = sim.mutationsOfType(m1);
+	    freqs = sim.mutationFrequencies(NULL, muts);
+	    freq = size(freqs) ? freqs[0] else 0;
+	    catn(freq);
+    }
+}
+

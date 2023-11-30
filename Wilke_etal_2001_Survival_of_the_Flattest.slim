@@ -1,0 +1,89 @@
+//A quantitative genetic model showing the survival of the flattest
+//A simplified (non artificial-life) version of the Wilke et al. 2001 model
+
+initialize() {
+    initializeMutationRate(5e-5);
+    initializeMutationType("m1", 0.5, "f", 0.0); // neutral
+    initializeMutationType("m2", 0.5, "n", 0.0, 0.3); //QTL
+    m1.convertToSubstitution = T;
+    m2.convertToSubstitution = F;
+    initializeGenomicElementType("g1", c(m1,m2), c(1.0,1.0));
+    initializeGenomicElement(g1, 0, 99999);
+    initializeRecombinationRate(0.0);
+    defineConstant("Opt", 1.0); //trait optimum
+    defineConstant("ssL1", 2.0); //weakness of selection on lineage 1
+    defineConstant("ssL2", 6.0); //weakness of selection on lineage 2
+    defineConstant("K", 500); //pop carrying capacity
+}
+
+//turn off direct fitness effects
+mutationEffect(m2){ return 1.0; }
+
+//do assortative mating
+mateChoice() {
+    parent1L1 = individual.tag == 0;
+    parent2L1 = p1.individuals.tag == 0;
+    if (parent1L1)
+        return weights * ifelse(parent2L1, 1.0, 0.0);
+    else
+        return weights * ifelse(parent2L1, 0.0, 1.0);
+}
+
+//give kids their parents' tag
+//this along with the assortative mating yields two species
+modifyChild() {
+    parentTag = parent1.tag;
+    child.tag = parentTag;
+    return T;
+}
+
+//set up the population and tag about half of em with 1, 
+//and the others with zero. that distinguishes individuals of each species
+1 early() {
+    sim.addSubpop("p1", 500);
+    p1.individuals.tag = rbinom(500, 1, 0.5);
+}
+
+//do quantitative gentic fitness
+//the steepness of the selection gradient depends on the species
+//L1 has the highest adaptive optimum
+//L2 has a broader adaptive optimum
+1: late() {
+    L1s = p1.subsetIndividuals(tag=0);
+    L2s = p1.subsetIndividuals(tag=1);
+    L1phenos = L1s.sumOfMutationsOfType(m2);
+    L2phenos = L2s.sumOfMutationsOfType(m2);
+    L1deviations = Opt - L1phenos;
+    L2deviations = Opt - L2phenos;
+    L1fitnessFunctionMax = dnorm(0.0, 0.0, ssL1);
+    L2fitnessFunctionMax = dnorm(0.0, 0.0, ssL2);
+    L1adaptation = dnorm(L1deviations, 0.0, ssL1) / L1fitnessFunctionMax;
+    L2adaptation = dnorm(L2deviations, 0.0, ssL2) / L2fitnessFunctionMax;
+    L1s.fitnessScaling = 0.2 + L1adaptation * 0.9; //L1s are instrinsically more fit
+    L2s.fitnessScaling = 0.1 + L2adaptation * 0.9;
+}
+
+
+1:1000 late() {
+    inds = p1.individuals;
+    L1s = p1.subsetIndividuals(tag=0);
+    L2s = p1.subsetIndividuals(tag=1);
+    rat = size(L1s)/size(inds);
+    L1phenos = L1s.sumOfMutationsOfType(m2);
+    L2phenos = L2s.sumOfMutationsOfType(m2);
+    if ((sim.cycle-1) % 20 == 0){
+        if (rat == 0){
+            catn((sim.cycle-1) + " Lineage 2 won!");
+            sim.simulationFinished();
+        } 
+        else if (rat == 1){
+            catn((sim.cycle-1) + " Lineage 1 won!");
+            sim.simulationFinished();
+        } else {
+            catn((sim.cycle-1) + " | L1 freq.: " + rat + " | Mean pheno of L1: " + mean(L1phenos) + " | Mean Pheno of L2: " + mean(L2phenos));
+        }
+    }
+}
+
+
+

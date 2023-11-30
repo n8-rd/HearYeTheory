@@ -1,0 +1,167 @@
+//SLiM model of evolutionary Rescue following Burger and Lynch 1995
+initialize() {
+    initializeSLiMModelType("nonWF");
+    defineConstant("run",1); //sim iteration number
+    defineConstant("K", 200); // population carrying capacity
+    defineConstant("Nsub", 9); // number of subpopulations
+    defineConstant("subK", asInteger(round(K/Nsub))); // subpop K
+    defineConstant("m", 0.1); //migration rate (between adjacent patches)
+    defineConstant("mb", 0.5); //Northern migration bias (0-1)
+    defineConstant("k", 0.01); // rate at which t1 optimum changes per generation
+    defineConstant("B", 1.1); //mean and variance of Poisson distro of fecundity
+    defineConstant("omega", 2); //weakness of selection
+    defineConstant("esigma", 0.2); //variance of env. effect on phenotypes
+    defineConstant("ksigma", 0.05); //variance of t1 optimum 
+    initializeMutationType("m1", 0.5, "n", 0.0, 0.15); // t1 QTL
+    initializeGenomicElementType("g1", c(m1), c(1.0));
+    initializeGenomicElement(g1, 0, 99999);
+    initializeMutationRate(1e-7);
+    initializeRecombinationRate(1e-8);
+}
+
+//Do monogamous mating, with variable fecundity
+1: reproduction() {
+    litter = rpois(1, B);
+    mate = subpop.sampleIndividuals(1);
+    if (mate.size()){ // check to make sure there was a mate
+        for (j in seqLen(litter)){
+            subpop.addCrossed(individual, mate);
+        }
+    }
+}
+
+//this is a quantitative genetic model
+//So turn off direct allele fitness effects
+fitness(m1) { return 1.0; }
+
+//Here we add a Npop subpopulations and initialize some variables
+1 early() {
+    //subK = asInteger(round(K/Nsub));
+    for (i in 1:Nsub){
+        sim.addSubpop(i, subK);
+    }
+    sim.setValue("lag", 0.0); //lag of t1 mean behind optimum
+    sim.setValue("O", 0.0); //t1 optimum. initialize at zero
+    sim.setValue("crew", K); //we'll use this variable to keep tabs on popuation size
+}
+
+//do non-overlapping generations
+1: early() {
+    inds = sim.subpopulations.individuals;
+    inds[inds.age > 0].fitnessScaling = 0.0;
+}
+
+//OK in non-WF models, migration is an individual-thing. We can't just
+//set subpopulation level migration rates
+//Here we implement a linear stepping stone model
+//There are some conditionals here to handle cases where individuals are at
+//one of the edges of the potential range (and therefore can't migrate in 
+//one direction
+1: early(){
+    nIndividuals = sum(sim.subpopulations.individualCount);
+    //halt the simulation when extinction happens
+    if (nIndividuals == 0){
+        catn("Extinction!!");
+        sim.simulationFinished();
+        //writeFile("BuGe.csv", paste(c(run,m,(sim.generation-1)),sep=','), append=T);
+    } 
+    else {
+        nMigrants = rpois(1, nIndividuals *m);
+        migrants = sample(sim.subpopulations.individuals, nMigrants);
+    
+        for (migrant in migrants){
+            if (migrant.subpopulation.id == 1){
+                dest = sim.subpopulations[1];
+                dest.takeMigrants(migrant);
+            }
+            if (migrant.subpopulation.id == Nsub){
+                dest = sim.subpopulations[Nsub-2];
+                dest.takeMigrants(migrant);
+            }
+            else {
+                direction = rbinom(1,1,mb);
+                if (direction == 1){
+                    dest = sim.subpopulations[migrant.subpopulation.id];
+                    dest.takeMigrants(migrant);
+                } else {
+                    dest = sim.subpopulations[migrant.subpopulation.id - 2];
+                    dest.takeMigrants(migrant);
+                }
+           }
+        }
+    }
+}
+
+//Here we let evironments vary across subpopulations
+//we have environmental change occur in parallel across those populations
+//Hence a population can respond to environmental change by
+//migration to new patches, adapting to new conditions in their 
+//current patches, or combination of both
+
+//for the first 1000 generation, let O stay put. 
+1:999 early(){
+    optimum = sim.getValue("O") + rnorm(1, 0, ksigma);
+    offset = seq(-4,12,by=2); //steeper across-patch gradient
+    for (j in 1:Nsub){
+        inds = sim.subpopulations[j-1].individuals;
+        genotypes = inds.sumOfMutationsOfType(m1);
+        //add latitudinal and random environmental effects to those phenotypes
+        //the offset variable is what makes phenotypes (and hence fitnesses) vary across patches
+        phenotypes = genotypes + offset[j-1] + rnorm(size(genotypes),0,esigma);
+        deviations = optimum - phenotypes;
+        fitnessFunctionMax = dnorm(0.0, 0.0, omega);
+        adaptation = dnorm(deviations, 0.0, omega) / fitnessFunctionMax;
+        inds.fitnessScaling = adaptation;
+        //inds.fitnessScaling = 0.1 + adaptation * 0.9; //this would buffer fitness
+        inds.tagF = phenotypes; // just for output below
+        // density-dependence with a maximum benefit at low density
+        sim.subpopulations[j-1].fitnessScaling = min(subK / sim.subpopulations[j-1].individualCount, 1.5);
+   }
+}
+
+//then have O move k in each generation
+1000: early() { 
+    //calculate optimum
+    optimum = sim.getValue("O") + rnorm(1, 0, ksigma);
+    NewO = optimum + k;
+    sim.setValue("O", NewO);
+    // QTL-based fitness. In each successive patch, the evironment subtracts a little more from the genotype value
+    //offset = seq(-4,4,by=1); //across-patch gradient
+    offset = seq(-4,12,by=2); //steeper across-patch gradient
+    for (j in 1:Nsub){
+        inds = sim.subpopulations[j-1].individuals;
+        genotypes = inds.sumOfMutationsOfType(m1);
+        //add latitudinal and random environmental effects to those phenotypes
+        //the offset variable is what makes phenotypes (and hence fitnesses) vary across patches
+        phenotypes = genotypes + offset[j-1] + rnorm(size(genotypes),0,esigma);
+        deviations = NewO - phenotypes;
+        fitnessFunctionMax = dnorm(0.0, 0.0, omega);
+        adaptation = dnorm(deviations, 0.0, omega) / fitnessFunctionMax;
+        inds.fitnessScaling = adaptation;
+        //inds.fitnessScaling = 0.1 + adaptation * 0.9; //this would buffer fitness
+        inds.tagF = phenotypes; // just for output below
+        // density-dependence with a maximum benefit at low density
+        sim.subpopulations[j-1].fitnessScaling = min(subK / sim.subpopulations[j-1].individualCount, 1.5);
+    }
+}
+
+//OK. Now keep track of all of the subpopulaiton sizes.
+1000:{
+    if ((sim.generation -1) % 100 == 0){
+        Nvec = rep(0,Nsub);
+        for (i in 1:Nsub){
+            cru = size(sim.subpopulations[i-1].individualCount) ? sim.subpopulations[i-1].individualCount else 0;
+            Nvec[i-1] = cru;
+        }
+        mu = mean(sim.subpopulations.individuals.tagF);
+        LAG = size(mu) ? sim.getValue("O") - mu else 0;
+        sim.setValue("lag", c(sim.getValue("lag"), LAG));
+        catn(c(sim.generation-1,sim.getValue("O"),mu,cru));
+	    sim.setValue("crew", c(sim.getValue("crew"), cru));
+	    //writeFile("BurgerGeo.csv", paste(c((sim.generation-1),LAG,mu,Nvec),sep=','), append=T);
+	    writeFile("BurgerGeo.csv", paste(c((sim.generation-1),Nvec),sep=','), append=T);
+	}
+}
+
+
+5000 late() { sim.simulationFinished(); }

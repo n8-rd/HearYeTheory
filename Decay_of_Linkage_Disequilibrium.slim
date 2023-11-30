@@ -1,0 +1,93 @@
+//Plots evolution of D' in a panmictic population
+//Make a function to calculte D'
+
+function (f$)calcD(o<Subpopulation>$ subpop, o<MutationType>$ NeutralMutType)
+{
+	inds = sim.subpopulations.individuals;
+	mutts = inds.genomes.mutationsOfType(NeutralMutType);
+	freqs = sim.mutationFrequencies(subpop,mutts); //just two sites in our example
+	AB_haps = 0;
+	Ab_haps = 0;
+	aB_haps = 0;
+	for (gen in inds.genomes){
+	    posse = gen.positionsOfMutationsOfType(NeutralMutType);
+	    if (size(posse)){
+	        if (size(posse) == 2){
+	            AB_haps = AB_haps + 1;
+	        } 
+	        if (size(posse) == 1) {
+	            if (posse[0] == mutOneLoc) {
+	                Ab_haps = Ab_haps + 1;
+	            }
+	            if (posse[0] == mutTwoLoc) {
+	                aB_haps = aB_haps + 1;
+	            }
+	        }
+	    }
+    }
+    fAB = AB_haps / (2*size(inds));
+    fAb = Ab_haps / (2*size(inds));
+    faB = aB_haps / (2*size(inds));
+    fab = 1 - fAB - fAb - faB;
+    fA = fAB + fAb;
+    fa = faB + fab;
+    fB = fAB + faB;
+    fb = fAb + fab;
+    minnyPos = min((fA*fb), (fa*fB));
+    minnyNeg = min((fA*fB), (fa*fb));
+    DAB = fAB - (fA*fB);
+    rsq = DAB^2 / (fA*fB*fa*fb);
+    Dprime = 1.0;
+    if (DAB > 0){
+        Dprime = DAB / minnyPos;
+    } if (DAB < 0 ){
+        Dprime = DAB / minnyNeg;
+    }
+    return(rsq);
+}
+
+
+//set some basic model parameters. To get close to an equilibrium state in a hurry
+//we set a fast mutation rate, a small genome size, and a small population size
+//That amounts to a fast flow of genetic diversity into a population, and fast
+//flow of genetic diversity out of it
+
+initialize() {
+initializeMutationRate(0); //turn off mutation
+initializeMutationType("m1", 0.5, "f", 0.0); //make a neutral mutation type
+initializeGenomicElementType("g1", m1, 1.0);
+m1.convertToSubstitution = F; // my default when mutations are fixed they become
+//substitution objects. this turns that off and keeps them as mutations
+initializeGenomicElement(g1, 0, 99999); // make a genome
+initializeRecombinationRate(1e-8); //set the recombination rate
+defineConstant("PopSize", 5000); // set population size
+defineConstant("mutOneLoc", 999);
+defineConstant("mutTwoLoc", 99998);
+}
+
+//this next block get run just during the first generation
+//it makes a population of size PopSize, and then it puts the same two mutations in 
+//half of the population's genomes (2*PopSize/2). It also makes a variable
+//to keep track of the linkage disequalibrium in susequent generations
+//The rest is just setting up the plotting
+1 early() { 
+    sim.addSubpop("p1", PopSize);
+    g = sim.subpopulations.genomes;
+    GM = sample(g, asInteger(PopSize)); // individuals are diploid so there are a total of 1000 genomes
+    GM.addNewMutation(m1, 0, mutOneLoc); // one mutation
+    GM.addNewMutation(m1, 0, mutTwoLoc); //another mutation
+}
+
+//This block of code gets run in every generation
+//It just monitors the frequency of our mutation, and reports to the shell, 
+//and does the dynamic plotting thing
+1:1000 early(){
+    if ((sim.cycle -1) % 10 == 0){
+        dee = calcD(p1, m1);
+	    catn(dee);
+	}
+
+}
+
+
+

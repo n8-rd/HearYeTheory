@@ -1,0 +1,276 @@
+//a multi-species trait-matching model of virulence evolution / a.k.a. 
+//R-gene break down
+
+species all initialize() {
+	initializeSLiMModelType("nonWF");
+	defineConstant("K_HOST", 100);             // host carrying capacity
+	defineConstant("K_PATHOGEN", 500); // per-host pathogen carrying capacity
+	defineConstant("K_SOIL", 500); //soil pathogen carrying capacity
+	defineConstant("F_PATHOGEN", 2); // [5] max pathogen fecundity
+	defineConstant("F_HOST", 10);             // [5] host fecundity
+	defineConstant("G_HOST", 20);              // [20]relative generation timescale
+	defineConstant("P_TRANSMISSION", 0.004);    // [0.001] probability of transmission
+	defineConstant("S_M", 4.0);	// [2] pathogen/host matching width
+	defineConstant("S_S", 30.0);	// stabilizing fitness function width
+	defineConstant("InitialResistance", 5.0);
+}
+
+species host initialize() {
+	initializeSpecies(tickModulo=G_HOST, avatar="🫑️", color="green");
+	initializeSLiMOptions(keepPedigrees=T);
+	// one short QTL controlling pathogen resistance
+	initializeMutationType("m1", 0.5, "n", 0.0, 0.1); //cranking this to 0.3 lets the host run
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElement(g1, 0, 99999); //cranking this to 99999 lets the host run
+	initializeMutationRate(1e-6);
+	initializeRecombinationRate(1e-7);
+	// pedigree IDs are used to identify host-pathogen matches
+	// colors: blue == uninfected, yellow -> red == infected, black == dead
+}
+species pathogen initialize() {
+	initializeSpecies(avatar="🪱️", color="pink");
+    // one short QTL controlling host trait matching (e.g., virulence)
+	initializeMutationType("m2", 0.5, "n", 0.0, 0.1);
+	initializeGenomicElementType("g2", m2, 1.0);
+	initializeGenomicElement(g2, 0, 9999);
+	initializeMutationRate(1e-5);
+	initializeRecombinationRate(1e-8);
+	// pathogen.tag is a counter of the next subpop ID to use
+	// subpopulation.tag is the pedigree ID of the host for the subpop
+}
+
+//it's a quantitative genetic model, so turn built-in fitness effects off
+species host mutationEffect(m1) { return 1.0; }
+species pathogen mutationEffect(m2) { return 1.0; }
+
+//check to see if any subpopulations are extinct
+ticks all 2: first() {
+	if (p1.individualCount == 0)
+		stop(host.avatar + " extinct");
+	if (pathogen.subpopulations.size() == 0)
+		stop(pathogen.avatar + " extinct");
+}
+
+//Initialize community. allow for a burnin period before the first infections
+ticks all 1 early() {
+    //Add a persistent source (i.e. soil) pathogen population
+    pathogen.addSubpop("p2", K_SOIL);
+    pathogen.subpopulations.individuals.tagF = F_PATHOGEN;
+    //Make a host pop
+	host.addSubpop("p1", K_HOST);
+	
+	// log some basic output
+	logfile = community.createLogFile("host_pathogen_log.csv", logInterval=10);
+	logfile.addTick();
+	logfile.addSubpopulationSize(p1);
+	logfile.addPopulationSize(pathogen);
+	logfile.addCustomColumn("host_count", "size(p1.individuals);");
+	logfile.addMeanSDColumns("hostAge", "p1.individuals.age;");
+	logfile.addCustomColumn("virulence", "mean(pathogen.subpopulations.individuals.sumOfMutationsOfType(m2));");
+	logfile.addCustomColumn("resistance", "mean(p1.individuals.sumOfMutationsOfType(m1)+InitialResistance);");
+}
+
+
+//Now seed the initial infections
+ticks all 2000 early(){
+    // choose initial host carrying the infection
+	initial_hosts = p1.sampleIndividuals(5, replace=F);
+	pathogen.tag = 3;
+	taggers = integer(length=0);
+	for (initial_host in initial_hosts)
+	{
+		// make a pathogen subpop for the host
+		pathogen_subpop = pathogen.addSubpop(pathogen.tag, 1);
+		pathogen_subpop.tag = initial_host.pedigreeID;
+		taggers = c(taggers, pathogen_subpop.tag);
+		pathogen.tag = pathogen.tag + 1;
+	}
+	inHostPathogens = pathogen.subpopulations[pathogen.subpopulations.id !=2];
+	inHostPathogens.tag = taggers;
+	p2.tag = 2;
+}
+
+//Reproduction for hosts
+species host reproduction(p1) {
+	// host reproduce sexually
+	litterSize = rpois(1, F_HOST);
+	for (i in seqLen(litterSize))
+	{
+		mate = subpop.sampleIndividuals(1);
+		subpop.addCrossed(individual, mate);
+	}
+}
+
+//Figure out trait-matching before reproduction
+ticks pathogen 2001: first(){
+    inSoilPathogens = p2.individuals;
+    inHostPathogens = pathogen.subpopulations[pathogen.subpopulations.id != 2];
+    //we'll use the tagF property of individuals to store their fecundity
+    inSoilPathogens.tagF = F_PATHOGEN;
+    allHosts = host.subpopulations.individuals;
+    for (hostInd in allHosts){
+        pathogenDeme = inHostPathogens[inHostPathogens.tag == hostInd.pedigreeID];
+        virulenceG = pathogenDeme.individuals.sumOfMutationsOfType(m2);
+        hostResistanceG = hostInd.sumOfMutationsOfType(m1)+InitialResistance;
+        scale = dnorm(0.0, 0.0, S_M);
+	    virulenceMatch = dnorm(rep(hostResistanceG,size(virulenceG)), virulenceG, S_M)/scale;
+	    pathogenDeme.individuals.tagF = F_PATHOGEN * virulenceMatch;
+    }
+    if (pathogen.cycle%10 == 0){
+        mVirulence = mean(pathogen.subpopulations.individuals.sumOfMutationsOfType(m2));
+        mResistance = mean(p1.individuals.sumOfMutationsOfType(m1)+InitialResistance);
+        mPathFecundity = mean(inHostPathogens.individuals.tagF);
+        catn(c(pathogen.cycle, "Vir:", mVirulence, "Res:", mResistance, "PF:", mPathFecundity, "PN:", sum(inHostPathogens.individualCount) ));
+    }
+}
+
+//Reproduction for pathogens
+species pathogen reproduction() {
+	// the pathogen reproduces clonally
+	// the rate depends on resistance-virulence trait matching
+	if (pathogen.cycle<2001){
+	    individual.tagF=F_PATHOGEN;
+	}
+	//catn(c(subpop.id, pathogen.cycle));
+	litterSize = rpois(1, individual.tagF);
+	for (i in seqLen(litterSize)){
+	    subpop.addCloned(individual);
+	}
+}
+
+
+//do simple density dependent regulation for hosts
+ticks host 2: early() {
+    //do density-dependence
+	p1.fitnessScaling = K_HOST / p1.individualCount;
+}
+
+//do regulation for pathogens, straight density dependence
+//This is the same for soil and host subpops
+ticks pathogen 2: early() {
+    pathogen.subpopulations.fitnessScaling = K_PATHOGEN / pathogen.subpopulations.individualCount;
+}
+
+// horizontal transmission between hosts and also the soil deme
+ticks all 2001: early() {
+	if (p1.individualCount > 1)
+	{
+		pathogenSubpops = pathogen.subpopulations[pathogen.subpopulations.id != 2];
+		allPathogens = pathogenSubpops.individuals;
+		isTransmitted = (rbinom(allPathogens.size(), 1, P_TRANSMISSION) == 1);
+		moving = allPathogens[isTransmitted];
+		
+		for (ind in moving)
+		{
+			// figure out which host we are in
+			hostID = ind.subpopulation.tag;
+			currentHost = host.individualsWithPedigreeIDs(hostID);
+			
+			// choose a different host and get its ID
+			newHost = p1.sampleIndividuals(1, exclude=currentHost);
+			newHostID = newHost.pedigreeID;
+			
+			// find/create a subpop for the new host and move to it
+			newSubpop = pathogenSubpops[pathogenSubpops.tag == newHostID];
+			if (newSubpop.size() == 0)
+			{
+				newSubpop = pathogen.addSubpop(pathogen.tag, 0);
+				pathogen.tag = pathogen.tag + 1;
+				newSubpop.tag = newHostID;
+				
+				// need to incorporate the new subpop in case it receives another
+				pathogenSubpops = c(pathogenSubpops, newSubpop);
+			}
+			newSubpop.takeMigrants(ind);
+		}
+		
+		//now do the soil pop
+		soilPathogens = p2.individuals;
+		isTransmitted = (rbinom(soilPathogens.size(), 1, P_TRANSMISSION) == 1);
+		moving = soilPathogens[isTransmitted];
+		for (ind in moving){
+		    //pick a target host
+		    targetHost = p1.sampleIndividuals(1);
+		    targetHostID = targetHost.pedigreeID;
+		    newSubpop = pathogenSubpops[pathogenSubpops.tag == targetHostID];
+		    if (newSubpop.size()==0){
+		        newSubpop = pathogen.addSubpop(pathogen.tag, 0);
+		        pathogen.tag = pathogen.tag + 1;
+		        newSubpop.tag = targetHostID;
+		        pathogenSubpops = c(pathogenSubpops, newSubpop);
+		    }
+		    newSubpop.takeMigrants(ind);
+		}
+		
+	}
+}
+
+
+//do virulence and supression
+ticks all 2001: early() {
+	inHostPathogens = pathogen.subpopulations[pathogen.subpopulations.id !=2];
+	for (pathogenSubpop in inHostPathogens)
+	{
+		popsize = asFloat(pathogenSubpop.individualCount);
+		midpoint = asInteger(K_PATHOGEN/2);
+		P_death = 0.5 / (1 + exp(-0.06*(popsize-midpoint)));
+		
+		//do some rough and ready supression
+		P_supp = 0.05;
+		if (rbinom(1,1,P_supp)){
+			//the infection is supressed; host lives, pathogen dies
+			pathogenSubpop.removeSubpopulation();
+		}
+		if (runif(1) < P_death)
+		{
+			// the host has died; kill it and its pathogens
+			hostInd = host.individualsWithPedigreeIDs(pathogenSubpop.tag);
+			host.killIndividuals(hostInd);
+			pathogenSubpop.removeSubpopulation();
+		}
+	}
+}
+
+//Let's apply some stablizing selection on the pathogen virulence trait
+ticks pathogen early() {
+	// calculate phenotypes and implement stabilizing selection
+	scale = dnorm(0.0, 0.0, S_S);
+	pathogens  = pathogen.subpopulations.individuals;
+	virulences = pathogens.sumOfMutationsOfType(m2);
+	pathogens.fitnessScaling = dnorm(virulences, 0.0, S_S) / scale;
+}
+
+//A wee bit of flash for the GUI
+ticks all 2001: early() {
+	// color hosts by their infection level
+	pathogenSubpops = pathogen.subpopulations;
+	for (hostInd in p1.individuals)
+	{
+		hostID = hostInd.pedigreeID;
+		pathogenSubpop = pathogenSubpops[pathogenSubpops.tag == hostID];
+		
+		if (pathogenSubpop.size() == 1)
+		{
+			pathogenCount = pathogenSubpop.individualCount;
+			hue = max(0.0, 1.0 - pathogenCount / K_PATHOGEN) * 0.15;
+			hostInd.color = rgb2color(hsv2rgb(c(hue, 1, 1)));
+		}
+		else
+			hostInd.color = "cornflowerblue";
+	}
+}
+
+//Here is where we have host death kill off its pathogens
+species host survival(p1) {
+	if (!surviving)
+	{
+		hostID = individual.pedigreeID;
+		inHostpathogenSubpops = pathogen.subpopulations[pathogen.subpopulations.id != 2];
+		pathogenSubpop = inHostpathogenSubpops[inHostpathogenSubpops.tag == hostID];
+		pathogenSubpop.removeSubpopulation();
+	}
+	return NULL;
+}
+
+ticks all 4000 late() { }
+

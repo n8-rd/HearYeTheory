@@ -1,0 +1,61 @@
+//This extends our slim model of positive selection to include
+//MCR-style gene drive
+
+initialize() {
+initializeMutationRate(0); //turn off mutation
+initializeMutationType("m1", 1.0, "f", -0.4); //make a deleterious mutation type
+initializeGenomicElementType("g1", m1, 1.0);
+m1.convertToSubstitution = F; // by default when mutations are fixed they become
+//substitution objects. this turns that off and keeps them as mutations
+initializeGenomicElement(g1, 0, 99999); // make a genome
+initializeRecombinationRate(1e-8); //set the recombination rate
+defineConstant("PopSize", 500); // set population size
+}
+
+//this next block gets run just during the first generation
+//it makes a population of size PopSize, and then it puts the same mutation in 
+//half of the population's genomes. It also makes a variable
+//to keep track of that mutation's frequency in susequent generations
+//The rest is just setting up the plotting
+1 early(){ 
+    sim.addSubpop("p1", PopSize);
+    g = sim.subpopulations.genomes;
+    GM = sample(g, 100); // individuals are diploid so there are a total of 1000 genomes
+    GM.addNewDrawnMutation(m1, 999);
+}
+
+//This is the new code block that implements MCR drive
+//In the recipe in the SLiM manual this kicks in 100% of the time
+//Here we make it less that perfect
+modifyChild() {
+    mut = sim.mutationsOfType(m1);
+    if (size(mut) == 1)
+    {
+        if (rbinom(1,1,0.65)){
+            hasMutOnChromosome1 = child.genome1.containsMutations(mut);
+            hasMutOnChromosome2 = child.genome2.containsMutations(mut);
+            if (hasMutOnChromosome1 & !hasMutOnChromosome2)
+                child.genome2.addMutations(mut);
+            else if (hasMutOnChromosome2 & !hasMutOnChromosome1)
+                child.genome1.addMutations(mut);
+        }
+    }
+    return T;
+}
+
+//This block of code gets run in every generation
+//It just monitors the frequency of our mutation, and reports to the shell, 
+//and does the dynamic plotting thing
+1:500 early(){
+    if ((sim.cycle -1) % 10 == 0){
+        muts = sim.mutationsOfType(m1);
+	    freqs = sim.mutationFrequencies(NULL, muts);
+	    freq = size(freqs) ? freqs[0] else 0;
+	    catn(freq);
+	}
+
+}
+
+
+
+

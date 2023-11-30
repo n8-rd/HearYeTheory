@@ -1,0 +1,152 @@
+//OK. Let's start with a simple implementation of a 
+//population genetic / SI epidemiological model. We'll start 
+//by assuming that hosts's don't recover. Later we can relax that 
+//assumption.
+
+//TODO: Build in antigen matching / avoiding. So there is a fitness
+//component that comes from the tuning of resouce exploitation phenos
+//and there is a component from the hacking of the hosts immune system.
+
+initialize() {
+    initializeSLiMModelType("nonWF");
+    defineConstant("m", 0.2); //per-capita pathogen migration rate
+    defineConstant("theta", 2); // max immig. rate of susceptible hosts
+    defineConstant("mu", 0.01); //background rate of host mortality
+    defineConstant("Nh", 50); //starting number of hosts (i.e. subpops)
+    defineConstant("Kh", 100); //carrying capacity of hosts
+    defineConstant("Kp", 10); //within-host pathogen carrying capacity
+    defineConstant("O", 3); //exploitation phenotype optimum
+    defineConstant("omega", 6); //weakness of selection
+    initializeMutationType("m1", 0.5, "n", 0.0, 0.3); // QTLs
+    m1.convertToSubstitution = F; //need to keep all alleles around
+    initializeGenomicElementType("g1", c(m1), c(1));
+    initializeGenomicElement(g1, 0, 99999);
+    initializeMutationRate(1e-7);
+    initializeRecombinationRate(1e-8);   
+}
+
+//This is a quantitative genetic model,
+//so turn off direct allele fitness effects
+fitness(m1) { return 1.0; }
+
+
+//Start with Nh subpopulations i.e. hosts. About 10% start off infected.
+//We also creat a variable to index any new hosts that will come into the sysem
+1 early() {
+    for (i in 1:Nh){
+        coin = rbinom(1,1,0.3);
+        if (coin == 1){
+            seeders = asInteger(round(runif(1,1,Kp)));
+            sim.addSubpop(i, seeders);
+        } else {
+            sim.addSubpop(i, 0);
+        }
+    }
+    sim.setValue("LastTag", Nh);
+}
+
+//Do clonal reproduction but with rates that vary by pathogen genotype
+1: reproduction() {
+    //pheno = abs(individual.sumOfMutationsOfType(m1));
+    pheno = individual.sumOfMutationsOfType(m1);
+    deviation = O - pheno;
+    fitnessFunctionMax = dnorm(0.0, 0.0, omega);
+    adaptation = dnorm(deviation, 0.0, omega) / fitnessFunctionMax;
+    B = 1 + adaptation;
+    //B = 1 + 0.15*pheno;
+    //catn(size(B));
+    batch = rpois(1, B);
+    for (j in seqLen(batch)){
+        subpop.addCloned(individual);
+    }
+}
+
+//Random Migration (i.e., transmission), non-overlapping generations
+//and density-dependent regulation
+1: early(){
+    //discrete generations
+    inds = sim.subpopulations.individuals;
+    if (size(inds) == 0){
+        catn("Pathogen are extinct!!");
+        sim.simulationFinished();
+    }
+    else {
+        //mp = abs(mean(inds.sumOfMutationsOfType(m1)));
+        K = Kp; //Kp*(1+10*mp);
+        inds[inds.age > 0].fitnessScaling = 0.0;
+        // migration
+        nIndividuals = sum(sim.subpopulations.individualCount);
+        nMigrants = rpois(1, nIndividuals * m);
+        //nMigrants = asInteger(round(nIndividuals * m));
+        migrants = sample(sim.subpopulations.individuals, nMigrants);
+        for (migrant in migrants){
+            dest = sample(sim.subpopulations, 1);
+            dest.takeMigrants(migrant);
+            //do dest = sample(sim.subpopulations, 1);
+            //while (dest != migrant.subpopulation);
+            //dest.takeMigrants(migrant);
+        }
+        // density-dependence
+        for (subpop in sim.subpopulations){
+            subpop.fitnessScaling = min((K / subpop.individualCount), 2.1);
+        }
+    }
+}
+
+//In each generation hosts die according to the sum of the overall
+//backround rate of mortality, mu, and a logistic 
+//tranformation of the mean virulence phenotype, of resident pathogens
+1: late() {
+    for (subpop in sim.subpopulations){
+        inds = subpop.individuals;
+        if (size(inds)!=0){
+            phenos = inds.sumOfMutationsOfType(m1);
+            //mp = abs(mean(phenos));
+            mp = mean(phenos);
+            //v = min((1-mu),(0.1*mp));
+            v = max(0.0,min((1-mu),(0.1*mp)));
+            vPlusMu = mu + v;
+            deathCoin = rbinom(1,1,vPlusMu);
+            if (deathCoin == 1){
+                subpop.removeSubpopulation();
+            }
+        }         
+    }
+}
+
+//In each generation new susceptible hosts are added at a rate that 
+//shrinks as the host population approaches is carrying capacity
+2: early() {
+    HostN = size(sim.subpopulations);
+    //a logistic tranformation
+    newP = theta*HostN*(1-(HostN/Kh));
+    if (newP > 0.0){
+        emHosts = Kh - newP;
+        for (i in 1:emHosts){
+            ht = sim.getValue("LastTag");
+            nextTag = ht + 1;
+            sim.addSubpop(nextTag, 0);
+            sim.setValue("LastTag", nextTag);
+        }
+    }
+}
+
+//Do some logging
+1: late() {
+    if ((sim.generation -1) % 50 == 0){
+        inds = sim.subpopulations.individuals;
+        if (size(inds)!=0){
+            //mu1 = abs(mean(inds.sumOfMutationsOfType(m1)));
+            mu1 = mean(inds.sumOfMutationsOfType(m1));
+            phenos = size(mu1) ? inds.sumOfMutationsOfType(m1) else rep(0,size(inds));
+            va = sd(phenos)^2;
+            catn(c(sim.generation-1,mu1,sum(sim.subpopulations.individualCount),size(sim.subpopulations),va));
+            writeFile("virOut.csv", paste(c(sim.generation-1,mu1,sum(sim.subpopulations.individualCount),size(sim.subpopulations)),sep=','), append=T);
+            foo = asString(sample(phenos,20));
+            writeFile("Phenos.csv", foo, append=T);
+            //catn(sample(phenos,20));
+        }
+    }
+}
+
+2001 { sim.simulationFinished(); }
